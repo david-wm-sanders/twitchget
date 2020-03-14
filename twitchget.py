@@ -7,6 +7,7 @@ import json
 import shutil
 import sqlite3
 import subprocess
+import tempfile
 from pathlib import Path
 
 import win32crypt
@@ -34,28 +35,29 @@ def _get_encryption_key(chrome_local_state_path):
 
 def _get_cookies(cookies_db_path, host_key, aes_gcm_key):
     cookies = []
-    # Copy the cookies database locally to avoid hitting a lock if Chrome has its copy open
-    cookies_db_copyp = shutil.copy(cookies_db_path, SCRIPT_DIR)
-    # Open the local copy of the cookies database
-    db = sqlite3.connect(cookies_db_copyp)
-    cursor = db.cursor()
-    # Select desired columns in rows from database where host_key
-    params = (host_key,)
-    cursor.execute("SELECT name, path, expires_utc, is_secure, encrypted_value FROM cookies WHERE host_key=?", params)
-    for result in cursor.fetchall():
-        name, path, expiry, secure, ev = result
-        # Decrypt the cookie value
-        if ev.startswith(b"v10"):
-            nonce, cipertext = ev[3:15], ev[15:]
-            aes_gcm = AESGCM(aes_gcm_key)
-            dv = aes_gcm.decrypt(nonce, cipertext, None).decode("utf-8")
-        else:
-            dv = win32crypt.CryptUnprotectData(ev, None, None, None, 0)[1].decode("utf-8")
-        cookies.append((name, path, expiry, secure, dv))
-    # Close the database cleanly
-    db.close()
-    # Unlink/remove the local cookies database copy
-    Path(cookies_db_copyp).unlink()
+    with tempfile.TemporaryDirectory(prefix="twitchget_") as temp_dir:
+        # Copy the cookies database temporarily to avoid hitting a lock if Chrome has its copy open
+        cookies_db_copyp = shutil.copy(cookies_db_path, temp_dir)
+        # Open the local copy of the cookies database
+        db = sqlite3.connect(cookies_db_copyp)
+        cursor = db.cursor()
+        # Select desired columns in rows from database where host_key
+        params = (host_key,)
+        query = "SELECT name, path, expires_utc, is_secure, encrypted_value "\
+                "FROM cookies WHERE host_key=?"
+        cursor.execute(query, params)
+        for result in cursor.fetchall():
+            name, path, expiry, secure, ev = result
+            # Decrypt the cookie value
+            if ev.startswith(b"v10"):
+                nonce, cipertext = ev[3:15], ev[15:]
+                aes_gcm = AESGCM(aes_gcm_key)
+                dv = aes_gcm.decrypt(nonce, cipertext, None).decode("utf-8")
+            else:
+                dv = win32crypt.CryptUnprotectData(ev, None, None, None, 0)[1].decode("utf-8")
+            cookies.append((name, path, expiry, secure, dv))
+        # Close the database cleanly
+        db.close()
     return cookies
 
 
