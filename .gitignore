@@ -2,5 +2,5 @@ venv/
 __pycache__/
 
 Cookies
-cookies.txt
+cookies*.txt
 *.mp4
