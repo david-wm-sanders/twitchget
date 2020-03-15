@@ -15,37 +15,34 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from docopt import docopt
 
 
-SCRIPT_DIR = Path(__file__).parent.resolve()
 CHROME_USERDATA_PATH = Path.home() / "AppData/Local/Google/Chrome/User Data"
 CHROME_LOCALSTATE_PATH = CHROME_USERDATA_PATH / "Local State"
 CHROME_COOKIES_PATH = CHROME_USERDATA_PATH / "Default/Cookies"
 HOST_KEY = ".twitch.tv"
+COOKIES_TXT_PATH = Path(__file__).parent.resolve() / "cookies.txt"
 
 
-def _get_encryption_key(chrome_local_state_path):
-    # Open the Chrome Local State as json and get the os_crypt.encrypted_key
+def get_encryption_key(chrome_local_state_path):
+    """Get the key used to symmetrically (AESGCM) encrypt cookie values in v10 from Chrome Local State."""
+    # Load the base64 encoded encrypted key from Chrome Local State json
     with chrome_local_state_path.open("r", encoding="utf-8") as f:
         base64_encrypted_key = json.load(f)["os_crypt"]["encrypted_key"]
-    # Decode the encrypted key from base64 and remove the "DPAPI" marker at the start
+    # Decode the encrypted key, remove the "DPAPI" marker at the start, and decrypt
     encrypted_key = base64.b64decode(base64_encrypted_key)[5::]
-    # Decrypt the encrypted key
-    key = win32crypt.CryptUnprotectData(encrypted_key, None, None, None, 0)[1]
-    return key
+    return win32crypt.CryptUnprotectData(encrypted_key, None, None, None, 0)[1]
 
 
-def _get_cookies(cookies_db_path, host_key, aes_gcm_key):
+def get_cookies(cookies_db_path, host_key, aes_gcm_key):
+    """Get the cookies for the specified host_key from Chrome Cookies sqlite database."""
     cookies = []
     with tempfile.TemporaryDirectory(prefix="twitchget_") as temp_dir:
-        # Copy the cookies database temporarily to avoid hitting a lock if Chrome has its copy open
-        cookies_db_copyp = shutil.copy(cookies_db_path, temp_dir)
-        # Open the local copy of the cookies database
-        db = sqlite3.connect(cookies_db_copyp)
-        cursor = db.cursor()
-        # Select desired columns in rows from database where host_key
-        params = (host_key,)
+        # Copy the cookies database to avoid hitting a lock and open
+        cookies_db_copy_path = shutil.copy(cookies_db_path, temp_dir)
+        db = sqlite3.connect(cookies_db_copy_path)
         query = "SELECT name, path, expires_utc, is_secure, encrypted_value "\
                 "FROM cookies WHERE host_key=?"
-        cursor.execute(query, params)
+        cursor = db.cursor()
+        cursor.execute(query, (host_key,))
         for result in cursor.fetchall():
             name, path, expiry, secure, ev = result
             # Decrypt the cookie value
@@ -61,7 +58,8 @@ def _get_cookies(cookies_db_path, host_key, aes_gcm_key):
     return cookies
 
 
-def _filter_cookies(cookies):
+def filter_cookies(cookies):
+    """Filter out session-only and blacklisted cookies."""
     # Filter out session-only (non-persistent) cookies
     cookies = filter(lambda c: c[2] != 0, cookies)
     # Filter out blacklisted cookies by name
@@ -70,11 +68,11 @@ def _filter_cookies(cookies):
     return cookies
 
 
-def _write_cookies_file(cookies):
-    cookies_txt_p = SCRIPT_DIR / "cookies.txt"
+def write_cookies_file(cookies, cookies_txt_path):
+    """Write cookies in the Netscape cookies.txt format."""
     # Write cookies to Netscape cookies.txt format as per
     # https://unix.stackexchange.com/questions/36531/format-of-cookies-when-using-wget
-    with cookies_txt_p.open(mode="w", encoding="utf-8") as cf:
+    with cookies_txt_path.open(mode="w", encoding="utf-8") as cf:
         cf.write("# HTTP Cookie File\n")
         for cookie in cookies:
             name, path, expiry, secure, dv = cookie
@@ -82,11 +80,11 @@ def _write_cookies_file(cookies):
             secure = "TRUE" if secure else "FALSE"
             if dv:
                 cf.write(f"{HOST_KEY}\tTRUE\t{path}\t{secure}\t{expiry}\t{name}\t{dv}\n")
-    return cookies_txt_p
 
 
-def _run_ytdl(target, cookies_txt_p, download_dir):
-    ytdl_args = ["youtube-dl.exe", target, f"--cookies={cookies_txt_p}",
+def run_ytdl(target, cookies_txt_path, download_dir):
+    """Run a youtube-dl.exe subprocess that uses the extracted cookies."""
+    ytdl_args = ["youtube-dl.exe", target, f"--cookies={cookies_txt_path}",
                  f"--output={download_dir}\\%(title)s.%(ext)s"]
     subprocess.run(ytdl_args)
 
@@ -96,12 +94,12 @@ if __name__ == '__main__':
     target, download_dir = args["<target>"], args["<download_dir>"]
 
     # Extract and decrypt the os_crypt.encrypted_key from Chrome Local State
-    aes_gcm_key = _get_encryption_key(CHROME_LOCALSTATE_PATH)
+    aes_gcm_key = get_encryption_key(CHROME_LOCALSTATE_PATH)
     # Get current cookies for ".twitch.tv" from Chrome default profile Cookies sqlite database
-    cookies = _get_cookies(CHROME_COOKIES_PATH, HOST_KEY, aes_gcm_key)
+    cookies = get_cookies(CHROME_COOKIES_PATH, HOST_KEY, aes_gcm_key)
     # Filter out cookies that are not wanted and/or required
-    cookies = _filter_cookies(cookies)
+    cookies = filter_cookies(cookies)
     # Write the cookies to a youtube-dl compliant Netscape cookies.txt format
-    cookies_txt_p = _write_cookies_file(cookies)
+    write_cookies_file(cookies, COOKIES_TXT_PATH)
     # Run youtube-dl against the target, using cookies at cookies_txt_p and downloading to download_dir
-    _run_ytdl(target, cookies_txt_p, download_dir)
+    run_ytdl(target, COOKIES_TXT_PATH, download_dir)
