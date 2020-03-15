@@ -19,6 +19,7 @@ CHROME_USERDATA_PATH = Path.home() / "AppData/Local/Google/Chrome/User Data"
 CHROME_LOCALSTATE_PATH = CHROME_USERDATA_PATH / "Local State"
 CHROME_COOKIES_PATH = CHROME_USERDATA_PATH / "Default/Cookies"
 HOST_KEY = ".twitch.tv"
+COOKIES_BLACKLIST = ("_ga")
 COOKIES_TXT_PATH = Path(__file__).parent.resolve() / "cookies.txt"
 
 
@@ -45,6 +46,9 @@ def get_cookies(cookies_db_path, host_key, aes_gcm_key):
         cursor.execute(query, (host_key,))
         for result in cursor.fetchall():
             name, path, expiry, secure, ev = result
+            # Skip cookies that are blacklisted by name or session-only
+            if name in COOKIES_BLACKLIST or expiry == 0:
+                continue
             # Decrypt the cookie value
             if ev.startswith(b"v10"):
                 nonce, cipertext = ev[3:15], ev[15:]
@@ -55,16 +59,6 @@ def get_cookies(cookies_db_path, host_key, aes_gcm_key):
             cookies.append((name, path, expiry, secure, dv))
         # Close the database cleanly
         db.close()
-    return cookies
-
-
-def filter_cookies(cookies):
-    """Filter out session-only and blacklisted cookies."""
-    # Filter out session-only (non-persistent) cookies
-    cookies = filter(lambda c: c[2] != 0, cookies)
-    # Filter out blacklisted cookies by name
-    blacklist = ["_ga"]
-    cookies = filter(lambda c: c[0] not in blacklist, cookies)
     return cookies
 
 
@@ -97,9 +91,7 @@ if __name__ == '__main__':
     aes_gcm_key = get_encryption_key(CHROME_LOCALSTATE_PATH)
     # Get current cookies for ".twitch.tv" from Chrome default profile Cookies sqlite database
     cookies = get_cookies(CHROME_COOKIES_PATH, HOST_KEY, aes_gcm_key)
-    # Filter out cookies that are not wanted and/or required
-    cookies = filter_cookies(cookies)
     # Write the cookies to a youtube-dl compliant Netscape cookies.txt format
     write_cookies_file(cookies, COOKIES_TXT_PATH)
-    # Run youtube-dl against the target, using cookies at cookies_txt_p and downloading to download_dir
+    # Run youtube-dl against the target, using cookies at COOKIES_TXT_PATH and downloading to download_dir
     run_ytdl(target, COOKIES_TXT_PATH, download_dir)
