@@ -1,5 +1,5 @@
 ﻿cffi==1.14.0
-cryptography==2.8
+cryptography==3.2
 docopt==0.6.2
 pycparser==2.20
 pywin32==227
