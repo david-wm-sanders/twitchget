@@ -17,7 +17,7 @@ from docopt import docopt
 
 CHROME_USERDATA_PATH = Path.home() / "AppData/Local/Google/Chrome/User Data"
 CHROME_LOCALSTATE_PATH = CHROME_USERDATA_PATH / "Local State"
-CHROME_COOKIES_PATH = CHROME_USERDATA_PATH / "Default/Cookies"
+CHROME_COOKIES_PATH = CHROME_USERDATA_PATH / "Default/Network/Cookies"
 HOST_KEY = ".twitch.tv"
 COOKIES_BLACKLIST = ("_ga")
 COOKIES_TXT_PATH = Path(__file__).parent.resolve() / "cookies.txt"
@@ -40,6 +40,7 @@ def get_cookies(cookies_db_path, host_key, aes_gcm_key):
         # Copy the cookies database to avoid hitting a lock and open
         cookies_db_copy_path = shutil.copy(cookies_db_path, temp_dir)
         db = sqlite3.connect(cookies_db_copy_path)
+        db.text_factory = bytes
         query = "SELECT name, path, expires_utc, is_secure, encrypted_value "\
                 "FROM cookies WHERE host_key=?"
         cursor = db.cursor()
@@ -47,7 +48,7 @@ def get_cookies(cookies_db_path, host_key, aes_gcm_key):
         for result in cursor.fetchall():
             name, path, expiry, secure, ev = result
             # Skip cookies that are blacklisted by name or session-only
-            if name in COOKIES_BLACKLIST or expiry == 0:
+            if name.decode("utf-8") in COOKIES_BLACKLIST or expiry == 0:
                 continue
             # Decrypt the cookie value
             if ev.startswith(b"v10"):
@@ -56,7 +57,7 @@ def get_cookies(cookies_db_path, host_key, aes_gcm_key):
                 dv = aes_gcm.decrypt(nonce, cipertext, None).decode("utf-8")
             else:
                 dv = win32crypt.CryptUnprotectData(ev, None, None, None, 0)[1].decode("utf-8")
-            cookies.append((name, path, expiry, secure, dv))
+            cookies.append((name.decode("utf-8"), path.decode("utf-8"), expiry, secure, dv))
         # Close the database cleanly
         db.close()
     return cookies
@@ -78,7 +79,7 @@ def write_cookies_file(cookies, cookies_txt_path):
 
 def run_ytdl(target, cookies_txt_path, download_dir):
     """Run a youtube-dl.exe subprocess that uses the extracted cookies."""
-    ytdl_args = ["youtube-dl.exe", target, f"--cookies={cookies_txt_path}",
+    ytdl_args = ["youtube-dl.exe", "-f 720p", target, f"--cookies={cookies_txt_path}",
                  f"--output={download_dir}\\%(title)s.%(ext)s"]
     subprocess.run(ytdl_args)
 
